@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resource Unzip"
+  short_description: "递归识别并解开网盘伪装压缩包，输出最终媒体文件夹。"
+  default_prompt: "Use $resource-unzip to unpack downloaded cloud-drive files into their final media folder."
