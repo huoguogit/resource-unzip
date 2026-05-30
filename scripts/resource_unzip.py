@@ -9,6 +9,7 @@ JSONL logs suitable for later reporting.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -16,7 +17,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 from typing import Iterable
 
@@ -39,7 +39,8 @@ MEDIA_EXTS = {
     ".m4v",
 }
 TEXT_EXTS = {".txt", ".nfo", ".url", ".md"}
-DEFAULT_PASSWORDS = ["上老王论坛当老王", "@月暖如梵音", "freeshare.com"]
+BUILTIN_COMMON_PASSWORDS = ["上老王论坛当老王", "@月暖如梵音", "freeshare.com"]
+DEFAULT_COMMON_PASSWORD_FILE = Path(__file__).resolve().parents[1] / "common_passwords.txt"
 DELETE_WORD_RE = re.compile(r"(删除|删掉|删)")
 JUNK_NAME_RE = re.compile(r"(文宣|宣传|广告|推广|网址发布|最新地址|防走失)")
 PART_RE = re.compile(r"^(?P<base>.+)\.(?P<num>\d{3})$")
@@ -48,6 +49,12 @@ PASSWORD_RE = re.compile(
     re.IGNORECASE,
 )
 FOLDER_PASSWORD_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]{4,64}")
+
+
+@dataclass(frozen=True)
+class PasswordCandidate:
+    value: str | None
+    source: str
 
 
 def write_log(log_path: Path | None, event: str, **data: object) -> None:
@@ -127,6 +134,22 @@ def extract_passwords(text: str) -> list[str]:
     return [match.group(1).strip().strip("\"'") for match in PASSWORD_RE.finditer(text)]
 
 
+def password_hints_from_text_file(path: Path) -> list[str]:
+    values = extract_passwords(path.name)
+    text = decode_small_text(path)
+    if text:
+        values.extend(extract_passwords(text))
+    return values
+
+
+def iter_password_hints(root: Path) -> Iterable[tuple[str, Path]]:
+    for file_path in iter_files(root):
+        if file_path.suffix.lower() not in TEXT_EXTS:
+            continue
+        for hint in password_hints_from_text_file(file_path):
+            yield hint, file_path
+
+
 def dedupe(values: Iterable[str | None]) -> list[str | None]:
     seen: set[str | None] = set()
     result: list[str | None] = []
@@ -138,6 +161,74 @@ def dedupe(values: Iterable[str | None]) -> list[str | None]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def dedupe_candidates(values: Iterable[PasswordCandidate]) -> list[PasswordCandidate]:
+    seen: dict[str | None, int] = {}
+    result: list[PasswordCandidate] = []
+    for candidate in values:
+        value = candidate.value
+        if value == "":
+            value = None
+            candidate = PasswordCandidate(value=None, source=candidate.source)
+        if value in seen:
+            index = seen[value]
+            if source_is_text_password(candidate.source) and not source_is_text_password(
+                result[index].source
+            ):
+                result[index] = candidate
+            continue
+        seen[value] = len(result)
+        result.append(candidate)
+    return result
+
+
+def source_is_text_password(source: str) -> bool:
+    return source.startswith("text_hint:") or source.startswith("password_file:")
+
+
+def password_lines_from_file(path: Path) -> list[str]:
+    text = decode_small_text(path) or ""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def load_common_passwords(path: Path = DEFAULT_COMMON_PASSWORD_FILE) -> list[str]:
+    values: list[str] = []
+    if path.exists():
+        values.extend(password_lines_from_file(path))
+    values.extend(BUILTIN_COMMON_PASSWORDS)
+    return [value for value in dedupe(values) if value is not None]
+
+
+def remember_common_password(
+    password: str | None,
+    common_password_file: Path,
+    log_path: Path | None,
+    source: str,
+) -> bool:
+    if not password:
+        return False
+    existing = set(load_common_passwords(common_password_file))
+    if password in existing:
+        write_log(
+            log_path,
+            "common_password_existing",
+            password=password,
+            source=source,
+            common_password_file=str(common_password_file),
+        )
+        return False
+    common_password_file.parent.mkdir(parents=True, exist_ok=True)
+    with common_password_file.open("a", encoding="utf-8") as fh:
+        fh.write(password + "\n")
+    write_log(
+        log_path,
+        "common_password_added",
+        password=password,
+        source=source,
+        common_password_file=str(common_password_file),
+    )
+    return True
 
 
 def collect_scan(root: Path) -> dict[str, object]:
@@ -215,17 +306,13 @@ def collect_scan(root: Path) -> dict[str, object]:
                 entry["detected"] = sniffed
 
         if suffix in TEXT_EXTS:
-            for hint in extract_passwords(file_path.name):
+            for hint in password_hints_from_text_file(file_path):
                 password_hints.append({"source": rel, "password": hint})
-            text = decode_small_text(file_path)
-            if text:
-                for hint in extract_passwords(text):
-                    password_hints.append({"source": rel, "password": hint})
 
     password_candidates = dedupe(
         [hint["password"] for hint in password_hints]
         + folder_passwords
-        + DEFAULT_PASSWORDS
+        + load_common_passwords()
     )
     return {
         "root": str(root),
@@ -367,15 +454,28 @@ def normalize(args: argparse.Namespace) -> int:
     return 0
 
 
-def load_passwords(args: argparse.Namespace) -> list[str | None]:
-    values: list[str | None] = [None]
-    values.extend(args.password or [])
+def load_passwords(args: argparse.Namespace) -> list[PasswordCandidate]:
+    values: list[PasswordCandidate] = [PasswordCandidate(None, "empty")]
+    values.extend(PasswordCandidate(password, "cli") for password in (args.password or []))
     if args.password_file:
-        text = decode_small_text(args.password_file) or ""
-        values.extend(line.strip() for line in text.splitlines() if line.strip())
-    if args.include_defaults:
-        values.extend(DEFAULT_PASSWORDS)
-    return dedupe(values)
+        values.extend(
+            PasswordCandidate(password, f"password_file:{args.password_file}")
+            for password in password_lines_from_file(args.password_file)
+        )
+    for hint_root in args.password_hint_root or []:
+        for password, source_path in iter_password_hints(hint_root):
+            values.append(PasswordCandidate(password, f"text_hint:{source_path}"))
+    if not args.no_common_passwords:
+        common_password_file = args.common_password_file.resolve()
+        values.extend(
+            PasswordCandidate(password, f"common:{common_password_file}")
+            for password in load_common_passwords(common_password_file)
+        )
+    return dedupe_candidates(values)
+
+
+def should_remember_password(candidate: PasswordCandidate) -> bool:
+    return candidate.value is not None and source_is_text_password(candidate.source)
 
 
 def command_exists(name: str) -> bool:
@@ -407,6 +507,7 @@ def run_external(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         text=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         preexec_fn=lower_priority if hasattr(os, "nice") else None,
@@ -416,6 +517,8 @@ def run_external(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def try_python_zip(archive: Path, output: Path, password: str | None) -> tuple[bool, str]:
     try:
+        import zipfile
+
         with zipfile.ZipFile(archive) as zf:
             pwd = password.encode("utf-8") if password else None
             zf.extractall(output, pwd=pwd)
@@ -478,21 +581,22 @@ def extract(args: argparse.Namespace) -> int:
     archive = args.archive.resolve()
     output = args.output.resolve()
     log_path = args.log.resolve() if args.log else None
-    passwords = load_passwords(args)
+    password_candidates = load_passwords(args)
     tool_order = ["7z", "7zz", "unar", "python-zip", "bsdtar"] if args.tool == "auto" else [args.tool]
 
     print(f"Archive: {archive}")
     print(f"Output: {output}")
     print(f"Tools: {', '.join(tool_order)}")
-    print(f"Password attempts: {len(passwords)}")
+    print(f"Password attempts: {len(password_candidates)}")
 
     if args.dry_run:
-        for password in passwords:
-            print(f"DRY-RUN password={password}")
+        for candidate in password_candidates:
+            print(f"DRY-RUN password={candidate.value} source={candidate.source}")
         return 0
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    for password in passwords:
+    for candidate in password_candidates:
+        password = candidate.value
         for tool in tool_order:
             attempt_dir = Path(
                 tempfile.mkdtemp(prefix=".resource-unzip-attempt-", dir=str(output.parent))
@@ -506,6 +610,7 @@ def extract(args: argparse.Namespace) -> int:
                 output=str(output),
                 tool=tool,
                 password=password,
+                password_source=candidate.source,
                 ok=ok,
                 has_output=has_output,
                 detail=detail,
@@ -520,18 +625,32 @@ def extract(args: argparse.Namespace) -> int:
                     output=str(output),
                     tool=tool,
                     password=password,
+                    password_source=candidate.source,
                 )
+                if should_remember_password(candidate):
+                    added = remember_common_password(
+                        password,
+                        args.common_password_file.resolve(),
+                        log_path,
+                        candidate.source,
+                    )
+                    if added:
+                        print(f"Remembered common password: {password}")
                 print(f"SUCCESS tool={tool} password={password}")
                 return 0
             shutil.rmtree(attempt_dir, ignore_errors=True)
-            print(f"FAILED tool={tool} password={password}: {detail.splitlines()[-1:]}")
+            print(
+                f"FAILED tool={tool} password={password} source={candidate.source}: "
+                f"{detail.splitlines()[-1:]}"
+            )
 
     write_log(
         log_path,
         "extract_failure",
         archive=str(archive),
         output=str(output),
-        tried_passwords=passwords,
+        tried_passwords=[candidate.value for candidate in password_candidates],
+        tried_password_sources=[candidate.source for candidate in password_candidates],
         tools=tool_order,
     )
     return 2
@@ -786,7 +905,24 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--output", type=Path, required=True)
     extract_parser.add_argument("--password", action="append")
     extract_parser.add_argument("--password-file", type=Path)
-    extract_parser.add_argument("--include-defaults", action="store_true")
+    extract_parser.add_argument(
+        "--password-hint-root",
+        type=Path,
+        action="append",
+        help="Scan this directory for text password hints and try them before common passwords.",
+    )
+    extract_parser.add_argument(
+        "--common-password-file",
+        type=Path,
+        default=DEFAULT_COMMON_PASSWORD_FILE,
+        help="Common password file to try after explicit and text-hint passwords.",
+    )
+    extract_parser.add_argument(
+        "--no-common-passwords",
+        action="store_true",
+        help="Do not try the common password file.",
+    )
+    extract_parser.add_argument("--include-defaults", action="store_true", help=argparse.SUPPRESS)
     extract_parser.add_argument("--tool", choices=["auto", "7z", "7zz", "unar", "python-zip", "bsdtar"], default="auto")
     extract_parser.add_argument("--log", type=Path)
     extract_parser.add_argument("--dry-run", action="store_true")

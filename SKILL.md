@@ -1,6 +1,6 @@
 ---
 name: resource-unzip
-description: Use this skill when Codex needs to unpack files downloaded from cloud drives or forums where archives are disguised as PNG/JPG/PDF/MP4/EXE/unknown files, split into .001/.002 parts, nested through multiple layers, or protected by passwords. It guides recursive archive identification, safe suffix normalization to zip/7z/rar, multipart staging, password discovery from folder names and text hints, extraction logging, final media-folder detection, junk promo cleanup, source-folder deletion after verified success, archive cleanup after success, and resource-conscious operation.
+description: Use this skill when Codex needs to unpack files downloaded from cloud drives or forums where archives are disguised as PNG/JPG/PDF/MP4/EXE/unknown files, split into .001/.002 parts, nested through multiple layers, or protected by passwords. It guides recursive archive identification, safe suffix normalization to zip/7z/rar, multipart staging, password discovery from folder names and text hints, persistent common-password learning, extraction logging, final media-folder detection, junk promo cleanup, source-folder deletion after verified success, archive cleanup after success, and resource-conscious operation.
 ---
 
 # Resource Unzip
@@ -21,9 +21,10 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 6. 修改伪装后缀时保留分卷编号。例如 `解压缩.png.001` 应改成 `解压缩.zip.001`，不能改成 `解压缩.zip`。
 7. 遇到 `.001`、`.002` 等分卷时，把同一组分卷放在同一 staging 文件夹下再解压。不同分卷散落在不同目录时，复制或硬链接到同一目录，不要直接移动原件。
 8. 注意密码和文件名编码。读取提示文本时尝试 UTF-8、GB18030、Big5、UTF-16、Latin-1；遇到乱码文件名时优先用 `unar` 或 `7z`，并保留原始字节来源。
-9. 找到最终目标文件夹后，清理其所属解压目录：删除目标文件夹之外已经确认属于本次解压链路的压缩包、伪装压缩包和分卷文件。不要删除目标文件夹，不要删除未确认用途的普通文件。先预览删除列表，再执行删除，并把结果写入日志。
-10. 解压结果中遇到 `文宣`、`宣传`、`广告`、`推广`、`网址发布`、`最新地址`、`防走失` 等明显推广或说明性质的文件/文件夹，确认不属于目标媒体后删除。
-11. 删除最初源文件夹前必须确认：目标文件夹已验证可用；目标文件夹不在源文件夹内部；日志中没有仍需从源文件夹继续处理的候选压缩包。
+9. 如果成功解压使用的是 `.txt`、`.nfo`、`.url`、`.md` 等文本提示中看到的密码，完成解压后把该密码加入 `common_passwords.txt`。之后遇到密码错误或显式密码无效时，继续尝试常用密码文件里的密码。
+10. 找到最终目标文件夹后，清理其所属解压目录：删除目标文件夹之外已经确认属于本次解压链路的压缩包、伪装压缩包和分卷文件。不要删除目标文件夹，不要删除未确认用途的普通文件。先预览删除列表，再执行删除，并把结果写入日志。
+11. 解压结果中遇到 `文宣`、`宣传`、`广告`、`推广`、`网址发布`、`最新地址`、`防走失` 等明显推广或说明性质的文件/文件夹，确认不属于目标媒体后删除。
+12. 删除最初源文件夹前必须确认：目标文件夹已验证可用；目标文件夹不在源文件夹内部；日志中没有仍需从源文件夹继续处理的候选压缩包。
 
 ## 快速流程
 
@@ -47,11 +48,13 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 1. 当前目录或同层目录中 `.txt`、`.nfo`、`.url`、`.md` 等小文本文件的文件名和内容，尤其是 `密码:xxx`、`解压密码：xxx`、`password=xxx`、`pwd:xxx`。
 2. 当前文件夹、父级文件夹、解压得到的某层文件夹名。特别关注英文和数字混合的目录名。
 3. 用户明确给出的密码。
-4. 常用密码：
+4. `common_passwords.txt` 中的常用密码，以及脚本内置的兜底常用密码：
    - `上老王论坛当老王`
    - `@月暖如梵音`
    - `freeshare.com`
 5. 空密码或无密码解压。对未加密压缩包应先尝试无密码；对已知加密压缩包再进入候选列表。
+
+脚本的 `extract` 命令默认会在显式密码、密码文件、文本提示密码之后尝试常用密码。成功密码如果来自 `--password-hint-root` 扫描到的文本提示，或来自 `--password-file` 指向的密码文本文件，会自动追加到 `common_passwords.txt`。如果要把新增常用密码同步到其他电脑，提交并推送 `common_passwords.txt`。
 
 ## 后缀和分卷判断
 
@@ -91,8 +94,10 @@ python3 scripts/resource_unzip.py normalize /path/to/download --stage /path/to/s
 尝试解压单个候选包：
 
 ```bash
-python3 scripts/resource_unzip.py extract /path/to/staging/archive.zip --output /path/to/extracted/layer-1 --password-file passwords.txt --log resource-unzip-log.jsonl
+python3 scripts/resource_unzip.py extract /path/to/staging/archive.zip --output /path/to/extracted/layer-1 --password-hint-root /path/to/download --password-file passwords.txt --log resource-unzip-log.jsonl
 ```
+
+`--password-hint-root` 可重复传入，用于扫描当前目录、同层目录或上一层解压目录中的 `.txt`、`.nfo`、`.url`、`.md` 密码提示。常用密码会自动参与尝试；只有明确不想尝试常用密码时才加 `--no-common-passwords`。
 
 找到目标文件夹后，先预览 `文宣`、`宣传`、`广告`、`推广` 等垃圾项：
 
