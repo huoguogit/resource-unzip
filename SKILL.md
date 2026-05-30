@@ -130,7 +130,7 @@ python3 scripts/resource_unzip.py delete-source /path/to/original-download-folde
 python3 scripts/resource_unzip.py delete-source /path/to/original-download-folder --target /path/to/extracted/final-media --apply --log resource-unzip-log.jsonl
 ```
 
-脚本会自动优先使用 `7z`，其次 `unar`，再退回到 Python ZIP 或 `bsdtar` 能处理的场景。缺少 `7z` 或 `unar` 时，RAR/7z 和加密 ZIP 可能无法完整处理；这时在日志中记录工具缺口，不要假装压缩包不可解。
+脚本会自动优先使用 `7z` 或 `7zz`，其次 `unar`，再退回到 Python ZIP 或 `bsdtar` 能处理的场景。即使 Codex 的 PATH 受限，也会额外查找 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。缺少 `7z`/`7zz` 或 `unar` 时，RAR/7z 和加密 ZIP 可能无法完整处理；这时在日志中记录工具缺口，不要假装压缩包不可解。
 
 ## 判断是否完成
 

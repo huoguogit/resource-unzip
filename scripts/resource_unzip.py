@@ -379,7 +379,22 @@ def load_passwords(args: argparse.Namespace) -> list[str | None]:
 
 
 def command_exists(name: str) -> bool:
-    return shutil.which(name) is not None
+    return find_command(name) is not None
+
+
+def find_command(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    home = Path.home()
+    for candidate in (
+        home / ".local" / "bin" / name,
+        Path("/opt/homebrew/bin") / name,
+        Path("/usr/local/bin") / name,
+    ):
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def run_external(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -416,8 +431,13 @@ def try_extract_with_tool(
     tool: str,
 ) -> tuple[bool, str]:
     kind = sniff_archive(archive) or archive_kind_from_name(archive)
-    if tool == "7z" and command_exists("7z"):
-        command = ["7z", "x", "-y", "-mmt=2", f"-o{attempt_dir}"]
+    if tool in {"7z", "7zz"}:
+        executable = find_command(tool)
+        if not executable and tool == "7z":
+            executable = find_command("7zz")
+        if not executable:
+            return False, f"tool {tool} is unavailable or not applicable"
+        command = [executable, "x", "-y", "-mmt=2", f"-o{attempt_dir}"]
         if password is not None:
             command.append(f"-p{password}")
         command.append(str(archive))
@@ -425,7 +445,13 @@ def try_extract_with_tool(
         return result.returncode == 0, result.stdout[-4000:]
 
     if tool == "unar" and command_exists("unar"):
-        command = ["unar", "-quiet", "-force-overwrite", "-output-directory", str(attempt_dir)]
+        command = [
+            find_command("unar") or "unar",
+            "-quiet",
+            "-force-overwrite",
+            "-output-directory",
+            str(attempt_dir),
+        ]
         if password is not None:
             command.extend(["-password", password])
         command.append(str(archive))
@@ -436,7 +462,7 @@ def try_extract_with_tool(
         return try_python_zip(archive, attempt_dir, password)
 
     if tool == "bsdtar" and command_exists("bsdtar") and password is None:
-        result = run_external(["bsdtar", "-xf", str(archive), "-C", str(attempt_dir)])
+        result = run_external([find_command("bsdtar") or "bsdtar", "-xf", str(archive), "-C", str(attempt_dir)])
         return result.returncode == 0, result.stdout[-4000:]
 
     return False, f"tool {tool} is unavailable or not applicable"
@@ -453,7 +479,7 @@ def extract(args: argparse.Namespace) -> int:
     output = args.output.resolve()
     log_path = args.log.resolve() if args.log else None
     passwords = load_passwords(args)
-    tool_order = ["7z", "unar", "python-zip", "bsdtar"] if args.tool == "auto" else [args.tool]
+    tool_order = ["7z", "7zz", "unar", "python-zip", "bsdtar"] if args.tool == "auto" else [args.tool]
 
     print(f"Archive: {archive}")
     print(f"Output: {output}")
@@ -761,7 +787,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("--password", action="append")
     extract_parser.add_argument("--password-file", type=Path)
     extract_parser.add_argument("--include-defaults", action="store_true")
-    extract_parser.add_argument("--tool", choices=["auto", "7z", "unar", "python-zip", "bsdtar"], default="auto")
+    extract_parser.add_argument("--tool", choices=["auto", "7z", "7zz", "unar", "python-zip", "bsdtar"], default="auto")
     extract_parser.add_argument("--log", type=Path)
     extract_parser.add_argument("--dry-run", action="store_true")
     extract_parser.set_defaults(func=extract)
