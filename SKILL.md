@@ -21,10 +21,11 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 6. 修改伪装后缀时保留分卷编号。例如 `解压缩.png.001` 应改成 `解压缩.zip.001`，不能改成 `解压缩.zip`。
 7. 遇到 `.001`、`.002` 等分卷时，把同一组分卷放在同一 staging 文件夹下再解压。不同分卷散落在不同目录时，复制或硬链接到同一目录，不要直接移动原件。
 8. 注意密码和文件名编码。读取提示文本时尝试 UTF-8、GB18030、Big5、UTF-16、Latin-1；遇到乱码文件名时优先用 `unar` 或 `7z`，并保留原始字节来源。
-9. 如果成功解压使用的是 `.txt`、`.nfo`、`.url`、`.md` 等文本提示中看到的密码，完成解压后把该密码加入 `common_passwords.txt`。之后遇到密码错误或显式密码无效时，继续尝试常用密码文件里的密码。
-10. 找到最终目标文件夹后，清理其所属解压目录：删除目标文件夹之外已经确认属于本次解压链路的压缩包、伪装压缩包和分卷文件。不要删除目标文件夹，不要删除未确认用途的普通文件。先预览删除列表，再执行删除，并把结果写入日志。
-11. 解压结果中遇到 `文宣`、`宣传`、`广告`、`推广`、`网址发布`、`最新地址`、`防走失` 等明显推广或说明性质的文件/文件夹，确认不属于目标媒体后删除。
-12. 删除最初源文件夹前必须确认：目标文件夹已验证可用；目标文件夹不在源文件夹内部；日志中没有仍需从源文件夹继续处理的候选压缩包。
+9. 如果成功解压使用的是 `.txt`、`.nfo`、`.url`、`.md` 等文本提示中看到的密码，完成解压后把该密码加入 `common_passwords.txt`，供后续任务按常用密码优先级复用。
+10. 如果解压结果中有多个 `.mp4`，检查这些文件名是否包含 `7z`、`zip`、`rar` 等压缩格式表述。只要存在这种表述，就不能把当前目录当作最终目标文件夹；应在 staging 中移除伪装 `.mp4` 后缀或改成对应压缩后缀，再继续解压。
+11. 找到最终目标文件夹后，清理其所属解压目录：删除目标文件夹之外已经确认属于本次解压链路的压缩包、伪装压缩包和分卷文件。不要删除目标文件夹，不要删除未确认用途的普通文件。先预览删除列表，再执行删除，并把结果写入日志。
+12. 解压结果中遇到 `文宣`、`宣传`、`广告`、`推广`、`网址发布`、`最新地址`、`防走失` 等明显推广或说明性质的文件/文件夹，确认不属于目标媒体后删除。
+13. 删除最初源文件夹前必须确认：目标文件夹已验证可用；目标文件夹不在源文件夹内部；日志中没有仍需从源文件夹继续处理的候选压缩包。
 
 ## 快速流程
 
@@ -32,7 +33,7 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
    - `staging/`：放清理和改名后的候选文件。
    - `extracted/`：放每层解压输出。
    - `resource-unzip-log.jsonl` 或 `resource-unzip-log.md`：记录过程。
-2. 盘点输入：用 `file`、`find`、`rg --files` 或本技能脚本识别压缩包魔数、分卷组、媒体文件、txt 密码提示。
+2. 盘点输入：用 `file`、`find`、`rg --files` 或本技能脚本识别压缩包魔数、分卷组、媒体文件、txt 密码提示，以及多个 `.mp4` 文件名中的 `7z`、`zip`、`rar` 压缩格式表述。
 3. 生成密码候选，按优先级去重。
 4. 在 staging 中规范化文件名和伪装后缀。
 5. 解压一层后，对输出目录重复步骤 2 到步骤 4，直到找到目标媒体文件夹或无法继续。
@@ -45,16 +46,18 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 
 按下面顺序尝试，并记录每个候选：
 
-1. 当前目录或同层目录中 `.txt`、`.nfo`、`.url`、`.md` 等小文本文件的文件名和内容，尤其是 `密码:xxx`、`解压密码：xxx`、`password=xxx`、`pwd:xxx`。
-2. 当前文件夹、父级文件夹、解压得到的某层文件夹名。特别关注英文和数字混合的目录名。
-3. 用户明确给出的密码。
-4. `common_passwords.txt` 中的常用密码，以及脚本内置的兜底常用密码：
+1. 固定首选密码：
    - `上老王论坛当老王`
+2. 当前文件夹、密码提示根目录及其子目录、解压得到的某层文件夹名。
+3. `common_passwords.txt` 中除首选密码之外的常用密码，以及脚本内置的兜底常用密码：
    - `@月暖如梵音`
    - `freeshare.com`
-5. 空密码或无密码解压。对未加密压缩包应先尝试无密码；对已知加密压缩包再进入候选列表。
+   - `11aa`
+   - `123`
+4. 用户通过 `--password` 明确给出的密码、`--password-file` 中的密码，以及当前目录或同层目录中 `.txt`、`.nfo`、`.url`、`.md` 等小文本文件内提取到的密码提示，例如 `密码:xxx`、`解压密码：xxx`、`password=xxx`、`pwd:xxx`。
+5. 空密码或无密码解压。
 
-脚本的 `extract` 命令默认会在显式密码、密码文件、文本提示密码之后尝试常用密码。成功密码如果来自 `--password-hint-root` 扫描到的文本提示，或来自 `--password-file` 指向的密码文本文件，会自动追加到 `common_passwords.txt`。如果要把新增常用密码同步到其他电脑，提交并推送 `common_passwords.txt`。
+脚本的 `extract` 命令默认严格按上面的优先级尝试密码。成功密码如果来自 `--password-hint-root` 扫描到的文本提示，或来自 `--password-file` 指向的密码文本文件，会自动追加到 `common_passwords.txt`。如果要把新增常用密码同步到其他电脑，提交并推送 `common_passwords.txt`。
 
 ## 后缀和分卷判断
 
@@ -72,6 +75,7 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 - `foo.mp4` 魔数是 RAR：在 staging 中改为 `foo.rar`。
 - `foo.exe.001` 按 ZIP 分卷处理：整组改为 `foo.zip.001`、`foo.zip.002`。
 - `foo.png.001` 第一分卷魔数是 ZIP：整组改为 `foo.zip.001`、`foo.zip.002`。
+- 同一目录中出现多个 `.mp4` 时，检查文件名中的 `7z`、`zip`、`rar` 表述。例如 `foo.7z.001.mp4`、`foo.7z.002.mp4` 应改成 `foo.7z.001`、`foo.7z.002` 后继续解压。
 - 后续分卷没有魔数时，根据 `.001` 的判断统一改名。
 - 无法用魔数判断但高度可疑时，按 `.zip`、`.7z`、`.rar` 的顺序复制出候选名逐个测试，不覆盖原文件。
 
@@ -97,7 +101,7 @@ python3 scripts/resource_unzip.py normalize /path/to/download --stage /path/to/s
 python3 scripts/resource_unzip.py extract /path/to/staging/archive.zip --output /path/to/extracted/layer-1 --password-hint-root /path/to/download --password-file passwords.txt --log resource-unzip-log.jsonl
 ```
 
-`--password-hint-root` 可重复传入，用于扫描当前目录、同层目录或上一层解压目录中的 `.txt`、`.nfo`、`.url`、`.md` 密码提示。常用密码会自动参与尝试；只有明确不想尝试常用密码时才加 `--no-common-passwords`。
+`--password-hint-root` 可重复传入，用于尝试目录名，并扫描当前目录、同层目录或上一层解压目录中的 `.txt`、`.nfo`、`.url`、`.md` 密码提示。常用密码会自动参与尝试；只有明确不想尝试常用密码时才加 `--no-common-passwords`。
 
 找到目标文件夹后，先预览 `文宣`、`宣传`、`广告`、`推广` 等垃圾项：
 
@@ -152,6 +156,7 @@ python3 scripts/resource_unzip.py delete-source /path/to/original-download-folde
 
 - 只得到一个图片或视频；
 - 媒体文件体积异常大，或 `file` 显示其魔数不是对应媒体格式；
+- 得到多个 `.mp4`，且文件名中仍包含 `7z`、`zip`、`rar` 等压缩格式表述；
 - 文件夹里还有 `.001/.002`、无后缀大文件、伪装后缀文件、或疑似密码提示文本；
 - 解压输出是另一个单文件，而不是最终媒体集合。
 

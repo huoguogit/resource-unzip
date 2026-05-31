@@ -39,16 +39,17 @@ MEDIA_EXTS = {
     ".m4v",
 }
 TEXT_EXTS = {".txt", ".nfo", ".url", ".md"}
-BUILTIN_COMMON_PASSWORDS = ["上老王论坛当老王", "@月暖如梵音", "freeshare.com"]
+PRIMARY_PASSWORD = "上老王论坛当老王"
+BUILTIN_COMMON_PASSWORDS = [PRIMARY_PASSWORD, "@月暖如梵音", "freeshare.com", "11aa", "123"]
 DEFAULT_COMMON_PASSWORD_FILE = Path(__file__).resolve().parents[1] / "common_passwords.txt"
 DELETE_WORD_RE = re.compile(r"(删除|删掉|删)")
 JUNK_NAME_RE = re.compile(r"(文宣|宣传|广告|推广|网址发布|最新地址|防走失)")
 PART_RE = re.compile(r"^(?P<base>.+)\.(?P<num>\d{3})$")
+ARCHIVE_NAME_MARKER_RE = re.compile(r"(?<![A-Za-z0-9])(7z|zip|rar)(?![A-Za-z0-9])", re.IGNORECASE)
 PASSWORD_RE = re.compile(
     r"(?:解压密码|压缩密码|密码|pass(?:word)?|pwd)\s*[:：=]\s*([^\s,，;；。]+)",
     re.IGNORECASE,
 )
-FOLDER_PASSWORD_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]{4,64}")
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,20 @@ def iter_password_hints(root: Path) -> Iterable[tuple[str, Path]]:
             yield hint, file_path
 
 
+def iter_folder_passwords(root: Path) -> Iterable[tuple[str, Path]]:
+    if root.is_file():
+        root = root.parent
+    if not root.is_dir():
+        return
+    if root.name:
+        yield root.name, root
+    for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames.sort()
+        for dirname in dirnames:
+            if dirname:
+                yield dirname, Path(dirpath) / dirname
+
+
 def dedupe(values: Iterable[str | None]) -> list[str | None]:
     seen: set[str | None] = set()
     result: list[str | None] = []
@@ -193,11 +208,15 @@ def password_lines_from_file(path: Path) -> list[str]:
 
 
 def load_common_passwords(path: Path = DEFAULT_COMMON_PASSWORD_FILE) -> list[str]:
-    values: list[str] = []
+    values: list[str] = [PRIMARY_PASSWORD]
     if path.exists():
         values.extend(password_lines_from_file(path))
     values.extend(BUILTIN_COMMON_PASSWORDS)
     return [value for value in dedupe(values) if value is not None]
+
+
+def other_common_passwords(path: Path = DEFAULT_COMMON_PASSWORD_FILE) -> list[str]:
+    return [password for password in load_common_passwords(path) if password != PRIMARY_PASSWORD]
 
 
 def remember_common_password(
@@ -236,25 +255,19 @@ def collect_scan(root: Path) -> dict[str, object]:
     suspicious: list[dict[str, object]] = []
     media_by_dir: dict[str, int] = {}
     password_hints: list[dict[str, str]] = []
-    folder_passwords: list[str] = []
+    folder_passwords = [password for password, _path in iter_folder_passwords(root)]
     part_groups: dict[str, dict[str, object]] = {}
+    mp4_counts = count_mp4_files_by_dir(root)
+    multi_mp4_archive_markers: list[dict[str, str]] = []
 
     for file_path in iter_files(root):
         rel = safe_rel(file_path, root)
         sniffed = sniff_archive(file_path)
         named = archive_kind_from_name(file_path)
-        kind = sniffed or named
+        media_marker_kind = archive_kind_from_multi_mp4_name(file_path, mp4_counts)
+        kind = sniffed or named or media_marker_kind
         suffix = file_path.suffix.lower()
         part = split_part(file_path)
-
-        for parent in file_path.parents:
-            if parent == parent.parent:
-                break
-            name = parent.name
-            if FOLDER_PASSWORD_RE.fullmatch(name):
-                folder_passwords.append(name)
-            if parent == root:
-                break
 
         if suffix in MEDIA_EXTS:
             media_by_dir[safe_rel(file_path.parent, root)] = media_by_dir.get(
@@ -262,7 +275,7 @@ def collect_scan(root: Path) -> dict[str, object]:
             ) + 1
 
         if kind or part:
-            reason = "magic" if sniffed else "extension_or_part"
+            reason = "magic" if sniffed else "multi_mp4_archive_name" if media_marker_kind else "extension_or_part"
             archives.append(
                 {
                     "path": rel,
@@ -272,7 +285,26 @@ def collect_scan(root: Path) -> dict[str, object]:
                 }
             )
 
-        if sniffed and archive_kind_from_name(file_path) != sniffed:
+        if media_marker_kind:
+            suggested_name = replacement_name(
+                file_path.name,
+                media_marker_kind,
+                media_marker_kind=media_marker_kind,
+            )
+            marker = {
+                "path": rel,
+                "detected": media_marker_kind,
+                "suggested_name": suggested_name,
+            }
+            multi_mp4_archive_markers.append(marker)
+            suspicious.append(
+                {
+                    **marker,
+                    "suggested_suffix": f".{media_marker_kind}",
+                    "reason": "multiple_mp4_archive_name_marker",
+                }
+            )
+        elif sniffed and archive_kind_from_name(file_path) != sniffed:
             suspicious.append(
                 {
                     "path": rel,
@@ -310,9 +342,10 @@ def collect_scan(root: Path) -> dict[str, object]:
                 password_hints.append({"source": rel, "password": hint})
 
     password_candidates = dedupe(
-        [hint["password"] for hint in password_hints]
+        [PRIMARY_PASSWORD]
         + folder_passwords
-        + load_common_passwords()
+        + other_common_passwords()
+        + [hint["password"] for hint in password_hints]
     )
     return {
         "root": str(root),
@@ -320,6 +353,7 @@ def collect_scan(root: Path) -> dict[str, object]:
         "suspicious": suspicious,
         "part_groups": list(part_groups.values()),
         "media_by_dir": media_by_dir,
+        "multi_mp4_archive_markers": multi_mp4_archive_markers,
         "password_hints": password_hints,
         "password_candidates": password_candidates,
     }
@@ -330,6 +364,7 @@ def print_scan(scan: dict[str, object]) -> None:
     suspicious = scan["suspicious"]
     part_groups = scan["part_groups"]
     media_by_dir = scan["media_by_dir"]
+    multi_mp4_archive_markers = scan["multi_mp4_archive_markers"]
     password_candidates = scan["password_candidates"]
 
     print(f"Root: {scan['root']}")
@@ -352,6 +387,10 @@ def print_scan(scan: dict[str, object]) -> None:
     for directory, count in sorted(media_by_dir.items(), key=lambda item: (-item[1], item[0]))[:25]:
         print(f"  - {directory}: {count}")
 
+    print(f"Multi-MP4 archive-name markers: {len(multi_mp4_archive_markers)}")
+    for item in multi_mp4_archive_markers[:50]:
+        print(f"  - {item['path']} -> {item['suggested_name']}")
+
     print("Password candidates:")
     for password in password_candidates:
         print(f"  - {password}")
@@ -363,7 +402,17 @@ def clean_component(name: str) -> str:
     return cleaned or "unnamed"
 
 
-def replacement_name(name: str, kind: str | None, part_kind: str | None = None) -> str:
+def replacement_name(
+    name: str,
+    kind: str | None,
+    part_kind: str | None = None,
+    media_marker_kind: str | None = None,
+) -> str:
+    if media_marker_kind and Path(name).suffix.lower() == ".mp4":
+        without_media_suffix = name[: -len(".mp4")]
+        if archive_kind_from_name(Path(clean_component(without_media_suffix))) == media_marker_kind:
+            name = without_media_suffix
+
     part = PART_RE.match(name)
     if part:
         base = clean_component(part.group("base"))
@@ -418,11 +467,27 @@ def build_part_kind_map(root: Path) -> dict[tuple[Path, str], str]:
     return part_kind
 
 
+def count_mp4_files_by_dir(root: Path) -> dict[Path, int]:
+    counts: dict[Path, int] = {}
+    for file_path in iter_files(root):
+        if file_path.suffix.lower() == ".mp4":
+            counts[file_path.parent] = counts.get(file_path.parent, 0) + 1
+    return counts
+
+
+def archive_kind_from_multi_mp4_name(path: Path, mp4_counts: dict[Path, int]) -> str | None:
+    if path.suffix.lower() != ".mp4" or mp4_counts.get(path.parent, 0) < 2:
+        return None
+    match = ARCHIVE_NAME_MARKER_RE.search(path.stem)
+    return match.group(1).lower() if match else None
+
+
 def normalize(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     stage = args.stage.resolve()
     log_path = args.log.resolve() if args.log else None
     part_kind = build_part_kind_map(root)
+    mp4_counts = count_mp4_files_by_dir(root)
     actions: list[dict[str, str]] = []
 
     for source in iter_files(root):
@@ -432,8 +497,9 @@ def normalize(args: argparse.Namespace) -> int:
         inherited_kind = None
         if part:
             inherited_kind = part_kind.get((source.parent, part[0]))
-        kind = sniff_archive(source) or archive_kind_from_name(source)
-        target_name = replacement_name(source.name, kind, inherited_kind)
+        media_marker_kind = archive_kind_from_multi_mp4_name(source, mp4_counts)
+        kind = sniff_archive(source) or archive_kind_from_name(source) or media_marker_kind
+        target_name = replacement_name(source.name, kind, inherited_kind, media_marker_kind)
         target = unique_path(stage.joinpath(*cleaned_dirs, target_name))
         actions.append({"source": str(source), "target": str(target)})
 
@@ -455,7 +521,25 @@ def normalize(args: argparse.Namespace) -> int:
 
 
 def load_passwords(args: argparse.Namespace) -> list[PasswordCandidate]:
-    values: list[PasswordCandidate] = [PasswordCandidate(None, "empty")]
+    values: list[PasswordCandidate] = []
+    common_password_file = args.common_password_file.resolve()
+    if not args.no_common_passwords:
+        values.append(PasswordCandidate(PRIMARY_PASSWORD, "primary"))
+    folder_roots: list[Path] = []
+    archive = getattr(args, "archive", None)
+    if archive:
+        folder_roots.append(archive.resolve().parent)
+    folder_roots.extend(args.password_hint_root or [])
+    for folder_root in folder_roots:
+        values.extend(
+            PasswordCandidate(password, f"folder:{source_path}")
+            for password, source_path in iter_folder_passwords(folder_root)
+        )
+    if not args.no_common_passwords:
+        values.extend(
+            PasswordCandidate(password, f"common:{common_password_file}")
+            for password in other_common_passwords(common_password_file)
+        )
     values.extend(PasswordCandidate(password, "cli") for password in (args.password or []))
     if args.password_file:
         values.extend(
@@ -465,12 +549,7 @@ def load_passwords(args: argparse.Namespace) -> list[PasswordCandidate]:
     for hint_root in args.password_hint_root or []:
         for password, source_path in iter_password_hints(hint_root):
             values.append(PasswordCandidate(password, f"text_hint:{source_path}"))
-    if not args.no_common_passwords:
-        common_password_file = args.common_password_file.resolve()
-        values.extend(
-            PasswordCandidate(password, f"common:{common_password_file}")
-            for password in load_common_passwords(common_password_file)
-        )
+    values.append(PasswordCandidate(None, "empty"))
     return dedupe_candidates(values)
 
 
@@ -909,13 +988,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--password-hint-root",
         type=Path,
         action="append",
-        help="Scan this directory for text password hints and try them before common passwords.",
+        help="Try folder names and scan this directory for fallback text password hints.",
     )
     extract_parser.add_argument(
         "--common-password-file",
         type=Path,
         default=DEFAULT_COMMON_PASSWORD_FILE,
-        help="Common password file to try after explicit and text-hint passwords.",
+        help="Common password file to try after the primary password and folder names.",
     )
     extract_parser.add_argument(
         "--no-common-passwords",
