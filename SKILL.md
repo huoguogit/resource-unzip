@@ -49,13 +49,13 @@ description: Use this skill when Codex needs to unpack files downloaded from clo
 1. 固定首选密码：
    - `上老王论坛当老王`
 2. 当前文件夹、密码提示根目录及其子目录、解压得到的某层文件夹名。
-3. `common_passwords.txt` 中除首选密码之外的常用密码，以及脚本内置的兜底常用密码：
+3. 空密码或无密码解压。
+4. `common_passwords.txt` 中除首选密码之外的常用密码，以及脚本内置的兜底常用密码：
    - `@月暖如梵音`
    - `freeshare.com`
    - `11aa`
    - `123`
-4. 用户通过 `--password` 明确给出的密码、`--password-file` 中的密码，以及当前目录或同层目录中 `.txt`、`.nfo`、`.url`、`.md` 等小文本文件内提取到的密码提示，例如 `密码:xxx`、`解压密码：xxx`、`password=xxx`、`pwd:xxx`。
-5. 空密码或无密码解压。
+5. 用户通过 `--password` 明确给出的密码、`--password-file` 中的密码，以及当前目录或同层目录中 `.txt`、`.nfo`、`.url`、`.md` 等小文本文件内提取到的密码提示，例如 `密码:xxx`、`解压密码：xxx`、`password=xxx`、`pwd:xxx`。
 
 脚本的 `extract` 命令默认严格按上面的优先级尝试密码。成功密码如果来自 `--password-hint-root` 扫描到的文本提示，或来自 `--password-file` 指向的密码文本文件，会自动追加到 `common_passwords.txt`。如果要把新增常用密码同步到其他电脑，提交并推送 `common_passwords.txt`。
 

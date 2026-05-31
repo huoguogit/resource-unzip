@@ -50,8 +50,9 @@ class PasswordOrderTests(unittest.TestCase):
             self.assertLess(values.index("folder-password"), values.index("custom-common"))
             self.assertLess(values.index("hint-root"), values.index("custom-common"))
             self.assertLess(values.index("nested-folder-password"), values.index("custom-common"))
+            self.assertLess(values.index("nested-folder-password"), values.index(None))
+            self.assertLess(values.index(None), values.index("custom-common"))
             self.assertLess(values.index("123"), values.index("cli-hint"))
-            self.assertEqual(values[-1], None)
 
     def test_builtin_common_passwords_include_short_values(self) -> None:
         self.assertIn("11aa", resource_unzip.BUILTIN_COMMON_PASSWORDS)

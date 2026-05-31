@@ -535,6 +535,7 @@ def load_passwords(args: argparse.Namespace) -> list[PasswordCandidate]:
             PasswordCandidate(password, f"folder:{source_path}")
             for password, source_path in iter_folder_passwords(folder_root)
         )
+    values.append(PasswordCandidate(None, "empty"))
     if not args.no_common_passwords:
         values.extend(
             PasswordCandidate(password, f"common:{common_password_file}")
@@ -549,7 +550,6 @@ def load_passwords(args: argparse.Namespace) -> list[PasswordCandidate]:
     for hint_root in args.password_hint_root or []:
         for password, source_path in iter_password_hints(hint_root):
             values.append(PasswordCandidate(password, f"text_hint:{source_path}"))
-    values.append(PasswordCandidate(None, "empty"))
     return dedupe_candidates(values)
 
 
